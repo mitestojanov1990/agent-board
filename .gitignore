@@ -1,0 +1,8 @@
+board.json
+board.json.tmp
+token
+config.json
+owner-key
+sessions/
+wait.log
+__pycache__/
