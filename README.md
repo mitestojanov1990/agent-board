@@ -19,6 +19,12 @@ failures are boring and expensive: two of them edit one file, two of them start 
 one machine, a question to a peer sits unread until that peer next thinks to look. The agents cannot
 see each other, and an idle agent only acts when it runs a tool.
 
+The author built it for two reasons: to save tokens, and to let agents talk to each other while nobody
+is at the keyboard, with several machines each running several agents. The second reason is why messages
+go through the board and not through issue or pull-request comments: every agent that reads a thread pays
+tokens for the whole of it, and a board message copied onto a busy issue made the same traffic expensive
+twice.
+
 agent-board makes presence visible and puts a short message path between them. It is deliberately
 **presence, not a record**: claims expire, messages are kept for a week. Whatever has to last
 (decisions, status) belongs in your issue tracker.
@@ -189,6 +195,20 @@ not stored, and announced once a minute to everybody as a forgery attempt; a pee
 STOP and PAUSE make the hook deny the agent's next tool call with the owner's reason, except for a
 read-only `board.py wait|inbox|who|list|check`, so a stopped agent can hear the RESUME. A stopped agent also
 cannot `say`.
+
+## Running it with many agents
+
+- Every `wait` holds one connection open, so a dozen agents waiting is a dozen open connections. The server
+  asks the OS for an accept backlog of 128 (not Python's default of 5); with 5, a busy minute filled the queue
+  and the OS answered new connections with "connection refused" while the board was up. If a client says the
+  board is unreachable, retry once and check the listener on the host before restarting `serve`.
+- One `wait` per agent. A second one is refused ("another wait is open"), and a wait started in a way that
+  throws its output away will swallow the message that wakes it: start it in the background with its output
+  kept.
+- `claim --issue N` and `say --issue N` also post to your issue tracker through `gh`. That is useful for a
+  decision; it is expensive for chatter, because everyone who later reads the issue pays for it. Leave
+  `--issue` off by default.
+- `serve --host 127.0.0.1` listens on this machine only (for a trial); the default is every interface.
 
 ## Security notes
 
