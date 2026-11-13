@@ -1141,9 +1141,17 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(200, {"ok": True, "conflicts": clash, "messages": out})
 
 
+class BoardServer(ThreadingHTTPServer):
+    # THE ACCEPT BACKLOG. socketserver's default is 5, and every `wait` holds a connection open, so a dozen agents polling plus one busy
+    # minute fills the queue: the OS then answers a NEW connection with "connection refused" while the board is up and listening, a message
+    # that sends the reader to restart a healthy board. 128 is what other servers ask for; the OS caps it to what it allows, so asking for
+    # more than it gives is harmless.
+    request_queue_size = 128
+
+
 def make_server(host, port, token):
     Handler.token = token
-    srv = ThreadingHTTPServer((host, port), Handler)
+    srv = BoardServer((host, port), Handler)
     srv.daemon_threads = True       # a long poll in progress must not keep a stopped server alive
     return srv
 
@@ -1419,7 +1427,7 @@ def network_words(e, timeout):
     if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in str(reason):
         return "no answer within %g s (the board may be busy; try again)" % timeout
     if isinstance(reason, ConnectionRefusedError):
-        return "connection refused (nothing is listening at that address: is `serve` running?)"
+        return "connection refused (nothing is listening at that address, OR the board's accept queue is full under load: retry once, and check the listener on the board host before restarting `serve`)"
     if isinstance(reason, (ConnectionResetError, ConnectionAbortedError)):
         return "the connection was reset before an answer"
     if isinstance(reason, socket.gaierror):
@@ -2418,6 +2426,7 @@ def cmd_selftest(_):
         selftest_keys(ok, tmp)
         selftest_pure(ok, tmp)
         selftest_live(ok, tmp)
+        selftest_listen_backlog(ok)
     finally:
         for k, v in saved_env.items():
             if v is None:
@@ -2427,6 +2436,36 @@ def cmd_selftest(_):
         shutil.rmtree(tmp, ignore_errors=True)
     print("%d check(s) failed" % len(fails) if fails else "all checks passed")
     return 1 if fails else 0
+
+
+def selftest_listen_backlog(ok):
+    """THE ACCEPT BACKLOG IS NOT socketserver's 5. The attribute is what the server asks the OS for; the live check opens 40 connections to a
+    server that is not serving yet and wants them all queued."""
+    import socket as _sk
+    print("the accept backlog:")
+    ok("the board server asks for an accept backlog of at least 128, not socketserver's 5",
+       BoardServer.request_queue_size >= 128 and ThreadingHTTPServer.request_queue_size < 128)
+    ok("a refusal says the accept queue may be full, not only that nothing is listening (that text sent people to restart a healthy board)",
+       "accept queue is full" in network_words(ConnectionRefusedError(), 5) and "refused" in network_words(ConnectionRefusedError(), 5))
+    saved_token = Handler.token
+    srv = make_server("127.0.0.1", 0, "backlog-token")
+    try:
+        port = srv.server_address[1]
+        socks, failed = [], 0
+        for _ in range(40):
+            c = _sk.socket()
+            c.settimeout(2)
+            try:
+                c.connect(("127.0.0.1", port))
+            except OSError:
+                failed += 1
+            socks.append(c)
+        ok("40 connections queue up on a board that is not accepting yet, none refused or dropped (a backlog of 5 loses most)", failed == 0)
+        for c in socks:
+            c.close()
+    finally:
+        srv.server_close()
+        Handler.token = saved_token
 
 
 def selftest_keys(ok, tmp):
