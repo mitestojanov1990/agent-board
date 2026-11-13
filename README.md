@@ -49,7 +49,8 @@ agent-board makes presence visible and puts a short message path between them. I
 ### 1. Run the server
 
 ```sh
-python3 board.py serve            # port 7480; set BOARD_PORT to change it
+python3 board.py serve            # every interface, port 7480; BOARD_PORT / --host (or BOARD_HOST) change them
+python3 board.py serve --host 127.0.0.1   # this machine only, for a trial
 ```
 
 It listens on all interfaces and prints the address and where it kept the token. The token is a

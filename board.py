@@ -1148,13 +1148,20 @@ def make_server(host, port, token):
     return srv
 
 
-def serve(cache=True):
+def advertise_host(host):
+    """The address clients should use: the LAN address when the server listens on every interface, else the address it was bound to."""
+    return lan_ip() if host in ("0.0.0.0", "") else host
+
+
+def serve(cache=True, host=None):
     global CACHE_ON
     CACHE_ON = bool(cache)
-    srv = make_server("0.0.0.0", PORT, server_token())
-    print("agent-board serving on port %d; the token is in %s" % (PORT, os.path.join(HERE, "token")))
-    print("clients: put {\"url\": \"http://%s:%d\", \"token\": \"<that token>\"} in config.json, or run `board.py install --url ... --token ...`" % (lan_ip(), PORT))
-    print("owner page: http://%s:%d/owner" % (lan_ip(), PORT))
+    host = host or os.environ.get("BOARD_HOST") or "0.0.0.0"
+    srv = make_server(host, PORT, server_token())
+    shown = advertise_host(host)
+    print("agent-board serving on %s port %d; the token is in %s" % (host, PORT, os.path.join(HERE, "token")))
+    print("clients: put {\"url\": \"http://%s:%d\", \"token\": \"<that token>\"} in config.json, or run `board.py install --url ... --token ...`" % (shown, PORT))
+    print("owner page: http://%s:%d/owner" % (shown, PORT))
     sys.stdout.flush()
     srv.serve_forever()
 
@@ -2455,6 +2462,12 @@ def selftest_keys(ok, tmp):
 def selftest_pure(ok, tmp):
     import io, contextlib
     now = time.time()
+    print("serve --host: where the server listens and what it tells clients:")
+    ok("listening on every interface advertises the LAN address; a chosen address is advertised as itself",
+       advertise_host("0.0.0.0") == lan_ip() and advertise_host("") == lan_ip() and advertise_host("127.0.0.1") == "127.0.0.1")
+    _srv = make_server("127.0.0.1", 0, "t")
+    ok("make_server on 127.0.0.1 binds the loopback address only", _srv.server_address[0] == "127.0.0.1")
+    _srv.server_close()
     print("a machine claim is not reported as a claim on your file:")
     mach = {"agent": "other", "what": "a build", "kind": "machine", "until": now + 600, "worktree": "", "issue": ""}
     text = hook_conflict_text([mach], "proj/a.c")
@@ -2957,6 +2970,7 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     sv = sub.add_parser("serve", help="run the server (state beside this file)")
     sv.add_argument("--no-cache", action="store_true", help="re-read board.json on every request")
+    sv.add_argument("--host", default=None, help="address to listen on (default: $BOARD_HOST, else 0.0.0.0 = every interface; 127.0.0.1 = this machine only)")
     sub.add_parser("list", help="every live claim")
     sub.add_parser("hook", help="the Claude Code hook entry point (JSON on stdin)")
     sub.add_parser("selftest", help="run the built-in checks")
@@ -3016,7 +3030,7 @@ def main():
     i.add_argument("--token", default="", help="the board's token (kept from an earlier config.json if omitted)")
     a = p.parse_args()
     if a.cmd == "serve":
-        serve(cache=not a.no_cache)
+        serve(cache=not a.no_cache, host=a.host)
         return 0
     if a.cmd == "busy":
         return cmd_claim(a, kind="machine")
