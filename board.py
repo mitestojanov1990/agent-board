@@ -12,6 +12,7 @@ One file, standard library only (Python 3.8+), so it runs unchanged on Windows, 
   board.py check PATH                  who holds this path (exit 0 always)
   board.py say AGENT|all TEXT... [--re ID] [--issue N]   message another agent (or every agent)
   board.py inbox [--peek] [--recent]   print your unread messages and mark them read
+  board.py summary [--since ID] [--issue N] [--limit N]   catch up cheaply: one short line per message, pull what you need with `show`
   board.py wait [--timeout MIN]        block until a message for you arrives (run it in the background)
   board.py who | roll                  every agent the board has seen / who has a wait open
   board.py show ID                     one message in full (the hook shows a shortened form)
@@ -132,7 +133,9 @@ class state_lock:
 
 MSG_DAYS = 7            # a message older than this is dropped, read or not
 MSG_CAP = 500           # and only the newest this many are kept
-MSG_TEXT_MAX = 4000
+MSG_TEXT_MAX = int(os.environ.get("BOARD_MSG_MAX", "4000"))     # lower it (say 800) to push long text into blobs
+SUMMARY_LINE = 110      # characters of a message's first line in `summary`
+SUMMARY_LIMIT = 50      # lines `summary` prints by default (the newest)
 BLOB_MAX = 20000        # characters in one blob
 BLOB_KEEP = 100         # blobs kept (newest), and no more than BLOB_TOTAL characters in all
 BLOB_TOTAL = 400000
@@ -709,6 +712,22 @@ def is_relevant(m, agent):
     return bool(m.get("owner") or m.get("urgent") or m["to"] == agent or names_agent(m["text"], agent))
 
 
+def summary_lines(messages, agent, since=0, issue=None, limit=SUMMARY_LIMIT):
+    """THE CHEAP WAY TO CATCH UP: one short line per message the agent may see (sent by it, to it, or to everybody), the newest `limit`, each
+    with its id so `board.py show ID` pulls the one that matters. Reading a whole inbox costs every message in full; this costs about 30
+    tokens a message. Returns (lines, total_matching). Pure."""
+    mine = [m for m in messages if (m["from"] == agent or m["to"] in (agent, "all")) and m["id"] > since
+            and (issue is None or str(m.get("issue", "")) == str(issue).lstrip("#"))]
+    shown = mine[-limit:] if limit > 0 else mine
+    out = []
+    for m in shown:
+        first = (m["text"].splitlines() or [""])[0]
+        more = " [+%d chars]" % (len(m["text"]) - len(first)) if len(m["text"]) > len(first) + 1 and len(first) <= SUMMARY_LINE else ""
+        out.append("~%s %s %s%s: %s%s" % (m["id"], time.strftime("%m-%d %H:%M", time.localtime(m["at"])), m["from"], ">all" if m["to"] == "all" else "",
+                                          clip(first, SUMMARY_LINE), more))
+    return out, len(mine)
+
+
 def public(m):
     return {k: m[k] for k in ("id", "from", "to", "text", "at", "re", "issue", "owner", "urgent") if k in m}
 
@@ -978,6 +997,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(status, out)
             if self.path == "/control":
                 return self.reply(200, {"stop": control_for(state, agent)})     # asked by the every-tool hook
+            if self.path == "/summary":
+                lines, total = summary_lines(state["messages"], agent, int(req.get("since") or 0) if is_num(req.get("since") or 0) else 0,
+                                             req.get("issue") or None, int(req.get("limit") or SUMMARY_LIMIT) if is_num(req.get("limit") or SUMMARY_LIMIT) else SUMMARY_LIMIT)
+                return self.reply(200, {"lines": lines, "total": total})
             if self.path == "/inbox" and req.get("id"):
                 # ONE MESSAGE IN FULL, by id: only one the caller sent, was sent to, or that went to everybody. It marks nothing read.
                 want = str(req.get("id"))
@@ -1629,6 +1652,20 @@ def cmd_say(a):
         err = post_issue_comment(a.issue, "%sFROM: %s (board message #%s)\n\n%s" % (lead, agent, r["id"], text))
         if err:
             print("NOTE: " + err)
+    return 0
+
+
+def cmd_summary(a):
+    r = call("POST", "/summary", {"agent": agent_name(), "since": a.since, "issue": a.issue or "", "limit": a.limit, "host": socket.gethostname()}, timeout=CMD_TIMEOUT)
+    if r is None:
+        print(unreachable_text())
+        return 1
+    for line in r["lines"]:
+        print(line)
+    if r["total"] > len(r["lines"]):
+        print("(%d older lines not shown: --limit %d)" % (r["total"] - len(r["lines"]), r["total"]))
+    if not r["lines"]:
+        print("(nothing new for %s)" % agent_name())
     return 0
 
 
@@ -2426,6 +2463,7 @@ def cmd_selftest(_):
         selftest_keys(ok, tmp)
         selftest_pure(ok, tmp)
         selftest_live(ok, tmp)
+        selftest_summary(ok)
         selftest_listen_backlog(ok)
     finally:
         for k, v in saved_env.items():
@@ -2436,6 +2474,24 @@ def cmd_selftest(_):
         shutil.rmtree(tmp, ignore_errors=True)
     print("%d check(s) failed" % len(fails) if fails else "all checks passed")
     return 1 if fails else 0
+
+
+def selftest_summary(ok):
+    """`summary` IS ONE SHORT LINE PER MESSAGE, so a catch-up costs a fraction of reading the inbox."""
+    print("summary:")
+    t = 1_700_000_000.0
+    msgs = [{"id": 1, "from": "a", "to": "all", "text": "x" * 500 + "\nsecond line", "at": t, "issue": "7"},
+            {"id": 2, "from": "a", "to": "b", "text": "short", "at": t, "issue": ""},
+            {"id": 3, "from": "c", "to": "d", "text": "not for b", "at": t, "issue": ""},
+            {"id": 4, "from": "b", "to": "a", "text": "mine\nwith a body", "at": t, "issue": "7"}]
+    lines, total = summary_lines(msgs, "b")
+    ok("it lists what the agent may see (sent by it, to it, to all) and not a stranger's direct message", total == 3 and not any("not for b" in l for l in lines))
+    ok("a long first line is clipped to one short line", len(lines[0]) < 40 + SUMMARY_LINE and lines[0].endswith("…"))
+    ok("a message with more lines says how much it hides", "[+" in lines[2] and "with a body" not in lines[2])
+    ok("--since leaves out what was already seen", summary_lines(msgs, "b", since=2)[0] and all(not l.startswith(("~1 ", "~2 ")) for l in summary_lines(msgs, "b", since=2)[0]))
+    ok("--issue keeps only that issue", summary_lines(msgs, "b", issue="7")[1] == 2 and summary_lines(msgs, "b", issue="#7")[1] == 2)
+    ok("--limit keeps the newest and still reports the total", summary_lines(msgs, "b", limit=1) == ([lines[2]], 3))
+    ok("it costs well under the whole text", sum(len(l) for l in lines) < sum(len(m["text"]) for m in msgs if m["id"] != 3) // 2)
 
 
 def selftest_listen_backlog(ok):
@@ -3044,6 +3100,10 @@ def main():
     w.add_argument("--all", action="store_true", help="wake for every message; the default wakes only for what is for you (to you, naming you, urgent, the owner's)")
     w.add_argument("--as-checkout", action="store_true", help="wait under the checkout's name even though no session named itself")
     w.add_argument("--log", action="store_true", help="print the last rows of this machine's wait.log and exit")
+    sm = sub.add_parser("summary", help="catch up cheaply: one short line per message (newest 50), then `show ID` for the one you need")
+    sm.add_argument("--since", type=int, default=0, help="only messages with an id above this")
+    sm.add_argument("--issue", help="only messages about this issue")
+    sm.add_argument("--limit", type=int, default=SUMMARY_LIMIT, help="how many of the newest lines (0 = all)")
     sh = sub.add_parser("show", help="one message in full, by id (the hook shows a shortened form)")
     sh.add_argument("id")
     bl = sub.add_parser("blob", help="`blob put [FILE]` stores a long text (stdin if no file) and prints its id; `blob N` reads blob N")
@@ -3073,7 +3133,7 @@ def main():
         return 0
     if a.cmd == "busy":
         return cmd_claim(a, kind="machine")
-    return {"list": cmd_list, "hook": cmd_hook, "claim": cmd_claim, "show": cmd_show, "renew": cmd_renew, "blob": cmd_blob, "release": cmd_release,
+    return {"list": cmd_list, "hook": cmd_hook, "claim": cmd_claim, "show": cmd_show, "summary": cmd_summary, "renew": cmd_renew, "blob": cmd_blob, "release": cmd_release,
             "check": cmd_check, "install": cmd_install, "name": cmd_name, "selftest": cmd_selftest, "update": cmd_update,
             "owner": cmd_owner, "say": cmd_say, "inbox": cmd_inbox, "wait": cmd_wait, "who": cmd_who, "roll": cmd_roll, "iam": cmd_iam}[a.cmd](a)
 

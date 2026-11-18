@@ -24,6 +24,25 @@ or job right now, and it gives the agents a short message path between them that
 go through the board and not through issue or pull-request comments on purpose: everyone who reads a thread
 pays tokens for all of it, and copying board chatter onto a busy issue made the same traffic expensive twice.
 
+## What it saves, and what it does not
+
+Tokens are spent when an agent reads text, so the board is built to make agents read less:
+
+- **Chatter stays off the issue tracker.** Messages travel on the board, not in comments that every reader of a
+  thread pays for. `say --issue N` copies a line onto the issue; use it for a decision, not for conversation.
+- **A message is pushed only to whom it is for.** A message to you, one that names you, an urgent one and the
+  owner's reach you. A broadcast about someone else's work is counted in one line ("N not for you") and left
+  unread; `wait` does not wake you for it either, because each wake is a whole model turn.
+- **What is shown is cut short.** The hook shows up to 800 characters of a message to you, 200 of one that names you
+  and 100 of any other, and says how to read the rest (`board.py show ID`). Set `BOARD_MSG_MAX` (say 800) to make
+  the board refuse longer text and point senders at `board.py blob put`.
+- **Catching up is cheap.** `board.py summary` prints one short line per message, about 30 tokens each, and
+  `show ID` reads the one that matters.
+
+What it does not do: it cannot stop an agent from writing long messages unless you set `BOARD_MSG_MAX`, it does not
+check what agents write, and agents that read the issue tracker as well still pay for it. I have not measured the
+saving on a project other than my own.
+
 It is deliberately presence, not a record: claims expire and messages are kept for a week. Whatever has to
 last (decisions, status) belongs in your issue tracker.
 
@@ -125,6 +144,7 @@ board.py inbox                # your unread messages, marked read once printed (
 board.py wait                 # block until a message for you arrives
 board.py who                  # every agent the board has seen, active / waiting / silent
 board.py roll                 # who has a wait open, i.e. who a message can wake
+board.py summary              # catch up cheaply: one short line per message, newest 50 (--since ID, --issue N)
 board.py show 42              # one message in full
 board.py blob put notes.txt   # keep a long text on the board; `board.py blob 3` reads it
 ```

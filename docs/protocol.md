@@ -18,6 +18,7 @@ carry `agent` (the caller's name), and clients add `host`, `client` (the protoco
 | `POST /release`, `/heartbeat`, `/check` | release, renew (`only_jobs`), who holds this key |
 | `POST /say` | `to`, `text`, `re`, `issue`; a repeat inside two minutes answers `dup: true` |
 | `POST /inbox` | unread messages; `wait` seconds makes it a long poll; `relevant`, `direct`, `peek`, `recent`, `id` |
+| `POST /summary` | `since`, `issue`, `limit`: one short line per message the caller may see, plus the matching total |
 | `POST /ack` | mark the listed message ids read (clients print first, then ack) |
 | `POST /blob` | store a long text |
 | `POST /control` | the STOP/PAUSE in force for `agent` (asked by the hook) |
